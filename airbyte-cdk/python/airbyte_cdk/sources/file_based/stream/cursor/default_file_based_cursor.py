@@ -4,7 +4,7 @@
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Iterable, MutableMapping, Optional
+from typing import Any, Iterable, List, MutableMapping, Optional
 
 from airbyte_cdk.sources.file_based.config.file_based_stream_config import FileBasedStreamConfig
 from airbyte_cdk.sources.file_based.remote_file import RemoteFile
@@ -30,6 +30,7 @@ class DefaultFileBasedCursor(AbstractFileBasedCursor):
 
         self._start_time = self._compute_start_time()
         self._initial_earliest_file_in_history: Optional[RemoteFile] = None
+        self._pending_files = None
 
     def set_initial_state(self, value: StreamState) -> None:
         self._file_to_datetime_history = value.get("history", {})
@@ -59,10 +60,34 @@ class DefaultFileBasedCursor(AbstractFileBasedCursor):
         Files are synced in order of last-modified with secondary sort on filename, so the cursor value is
         a string joining the last-modified timestamp of the last synced file and the name of the file.
         """
-        if self._file_to_datetime_history.items():
-            filename, timestamp = max(self._file_to_datetime_history.items(), key=lambda x: (x[1], x[0]))
-            return f"{timestamp}_{filename}"
-        return None
+        if not self._pending_files:
+            # Either there were no files to sync or we've synced all files; either way the cursor
+            # is set to the latest file in history because the sync is done
+            if self._file_to_datetime_history.items():
+                filename, timestamp = max(self._file_to_datetime_history.items(), key=lambda x: (x[1], x[0]))
+                return f"{timestamp}_{filename}"
+            else:
+                return None
+        else:
+            return self._get_low_water_mark()
+
+    def _get_low_water_mark(self) -> Optional[str]:
+        """
+        Returns the lexographically highest file key before which all others have been synced.
+        """
+        if not self._pending_files:
+            return None
+        prev = None
+        for file, is_complete in sorted(self._pending_files.items()):
+            if is_complete:
+                prev = file
+                continue
+            else:
+                return self._get_file_key(prev)
+        return prev
+
+    def _get_file_key(self, file: RemoteFile) -> str:
+        return f"{file.last_modified.strftime(self.DATE_TIME_FORMAT)}_{file.uri}"
 
     def _is_history_full(self) -> bool:
         """
@@ -130,3 +155,14 @@ class DefaultFileBasedCursor(AbstractFileBasedCursor):
                 time_window = datetime.now() - self._time_window_if_history_is_full
                 earliest_dt = min(earliest_dt, time_window)
             return earliest_dt
+
+    def set_pending_files(self, pending_files: List[RemoteFile]):
+        """
+        Set the slices waiting to be processed.
+        """
+        self._pending_files = {}
+        for file in sorted(pending_files, key=self._get_file_key):
+            self._pending_files[self._get_file_key(file)] = False
+
+    def close_pending_file(self, file: RemoteFile):
+        self._pending_files[self._get_file_key(file)] = True

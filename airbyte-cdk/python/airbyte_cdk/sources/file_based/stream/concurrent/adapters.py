@@ -33,7 +33,8 @@ from airbyte_cdk.sources.streams.concurrent.adapters import (
 #     StreamAvailable,
 #     StreamUnavailable,
 # )
-from airbyte_cdk.sources.streams.concurrent.cursor import Cursor, NoopCursor
+from airbyte_cdk.sources.file_based.stream.concurrent.cursor import FileBasedConcurrentCursor
+from airbyte_cdk.sources.streams.concurrent.cursor import NoopCursor
 from airbyte_cdk.sources.streams.concurrent.exceptions import ExceptionWithDisplayMessage
 from airbyte_cdk.sources.streams.concurrent.partitions.partition import Partition
 
@@ -69,7 +70,7 @@ class FileBasedStreamFacade(StreamFacade):
         source: AbstractSource,
         logger: logging.Logger,
         state: Optional[MutableMapping[str, Any]],
-        cursor: Cursor,
+        cursor: FileBasedConcurrentCursor,
     ) -> Stream:
         """
         Create a ConcurrentStream from a FileBasedStream object.
@@ -171,7 +172,10 @@ class FileBasedStreamPartition(StreamPartition):
                 raise e
 
     def to_slice(self) -> Optional[Mapping[str, Any]]:
-        return {"_ab_source_file_last_modified": f"{self._slice['files'][0].last_modified}_{self._slice['files'][0].uri}"}
+        assert len(
+            self._slice["files"]) == 1, f"Expected 1 file per partition but got {len(self._slice['files'])} for stream {self.stream_name()}"
+        file = self._slice['files'][0]
+        return {file.uri: file}
 
     def close(self) -> None:
         self._cursor.close_partition(self)
@@ -192,7 +196,7 @@ class FileBasedStreamPartition(StreamPartition):
             return hash(self._stream.name)
 
     def __repr__(self) -> str:
-        return f"StreamPartition({self._stream.name}, {self._slice})"
+        return f"FileBasedStreamPartition({self._stream.name}, {self._slice})"
 
 
 class StreamReaderPool:
@@ -215,12 +219,36 @@ class FileBasedStreamPartitionGenerator(StreamPartitionGenerator):
     This class can be used to help enable concurrency on existing connectors without having to rewrite everything as AbstractStream.
     In the long-run, it would be preferable to update the connectors, but we don't have the tooling or need to justify the effort at this time.
     """
+    def __init__(
+        self,
+        stream: Stream,
+        message_repository: MessageRepository,
+        sync_mode: SyncMode,
+        cursor_field: Optional[List[str]],
+        state: Optional[MutableMapping[str, Any]],
+        cursor: FileBasedConcurrentCursor,
+    ):
+        """
+        :param stream: The stream to delegate to
+        :param message_repository: The message repository to use to emit non-record messages
+        """
+        self.message_repository = message_repository
+        self._stream = stream
+        self._sync_mode = sync_mode
+        self._cursor_field = cursor_field
+        self._state = state
+        self._cursor = cursor
 
     def generate(self) -> Iterable[FileBasedStreamPartition]:
-        for s in self._stream.stream_slices(sync_mode=self._sync_mode, cursor_field=self._cursor_field, stream_state=self._state):
-            yield FileBasedStreamPartition(
-                self._stream, s, self.message_repository, self._sync_mode, self._cursor_field, self._state, self._cursor
+        pending_partitions = []
+        for i, s in enumerate(
+                self._stream.stream_slices(sync_mode=self._sync_mode, cursor_field=self._cursor_field, stream_state=self._state)):
+            partition = FileBasedStreamPartition(
+                self._stream, copy.deepcopy(s), self.message_repository, self._sync_mode, self._cursor_field, self._state, self._cursor
             )
+            pending_partitions.append(partition)
+        self._cursor.set_pending_partitions(pending_partitions)
+        yield from pending_partitions
 
 
 class FileBasedStreamPartitionReader:

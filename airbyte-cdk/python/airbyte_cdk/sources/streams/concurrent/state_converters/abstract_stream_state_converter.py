@@ -25,7 +25,7 @@ class AbstractStreamStateConverter(ABC):
         if not cursor_field:
             return None
         if self.is_state_message_compatible(state):
-            compatible_state = self.deserialize(state)
+            return self.deserialize(state)
         return self.convert_from_sequential_state(cursor_field, start, state)
 
     @abstractmethod

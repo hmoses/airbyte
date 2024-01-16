@@ -24,6 +24,7 @@ from airbyte_cdk.sources.file_based.file_types.file_type_parser import FileTypeP
 from airbyte_cdk.sources.file_based.schema_validation_policies import DEFAULT_SCHEMA_VALIDATION_POLICIES, AbstractSchemaValidationPolicy
 from airbyte_cdk.sources.file_based.stream import AbstractFileBasedStream, DefaultFileBasedStream
 from airbyte_cdk.sources.file_based.stream.concurrent.adapters import FileBasedStreamFacade
+from airbyte_cdk.sources.file_based.stream.concurrent.cursor import FileBasedConcurrentCursor
 from airbyte_cdk.sources.file_based.stream.cursor import AbstractFileBasedCursor
 from airbyte_cdk.sources.file_based.stream.cursor.default_file_based_cursor import DefaultFileBasedCursor
 from airbyte_cdk.sources.message.repository import InMemoryMessageRepository, MessageRepository
@@ -134,25 +135,20 @@ class FileBasedSource(ConcurrentSourceAdapter, ABC):
                 cursor = NoopCursor()
                 state = None
             else:
-                cursor_field_key = stream.cursor_field or ""
-                if not isinstance(cursor_field_key, str):
-                    raise AssertionError(f"A string cursor field key is required, but got {cursor_field_key}.")
-                cursor_field = CursorField(cursor_field_key)
-                state = stream.state_converter.get_concurrent_stream_state(
-                    cursor_field, config.get("start_date"), state_manager.get_stream_state(stream.name, stream.namespace)
-                )
-                cursor = ConcurrentCursor(
+                state = state_manager.get_stream_state(stream.name, stream.namespace)
+                concurrent_cursor = FileBasedConcurrentCursor(
                     stream.name,
                     stream.namespace,
                     state,
                     self.message_repository,
                     state_manager,
                     stream.state_converter,
-                    cursor_field,
+                    CursorField(stream.cursor_field),
                     None,  # For file-based sources, each file is one slice
+                    stream._cursor,
                 )
 
-            configured_streams.append(FileBasedStreamFacade.create_from_stream(stream, self, self.logger, state, cursor))
+            configured_streams.append(FileBasedStreamFacade.create_from_stream(stream, self, self.logger, state, concurrent_cursor))
         return configured_streams
 
     def _get_file_based_streams(self, config: Mapping[str, Any]) -> List[AbstractFileBasedStream]:

@@ -1,14 +1,17 @@
 from datetime import datetime
-from typing import Any, List, MutableMapping, Optional
+from typing import Any, Iterable, List, MutableMapping, Optional, Tuple
 
+import pendulum
 from airbyte_cdk.sources.streams.concurrent.cursor import CursorField
 from airbyte_cdk.sources.streams.concurrent.state_converters.abstract_stream_state_converter import ConcurrencyCompatibleStateType
 from airbyte_cdk.sources.streams.concurrent.state_converters.datetime_stream_state_converter import DateTimeStreamStateConverter
+from pendulum.datetime import DateTime
 
 
 class IsoMicrosWithSecondarySortStateConverter(DateTimeStreamStateConverter):
     START_KEY = "start"
     END_KEY = "end"
+    _zero_value = "0001-01-01T00:00:00.000Z_"
 
     def get_concurrent_stream_state(
         self, cursor_field: Optional["CursorField"], start: Any, state: MutableMapping[str, Any]
@@ -17,44 +20,53 @@ class IsoMicrosWithSecondarySortStateConverter(DateTimeStreamStateConverter):
             return None
         if self.is_state_message_compatible(state):
             compatible_state = self.deserialize(state)
-            compatible_state["start"] = self.parse_timestamp(start) if start else self.zero_value
+            compatible_state["start"] = start or self.zero_value
         return self.convert_from_sequential_state(cursor_field, start, state)
 
     @property
-    def _zero_value(self) -> Any:
+    def zero_value(self) -> Tuple[datetime, str]:
+        return self._parse_timestamp(self._zero_value), ""
+
+    def increment(self, value: str) -> str:
+        return value + "0"
+
+    def min(self, *items: Iterable[Any]) -> Any:
+        """
+        Parse the value of the cursor field into a comparable value.
+        Performs a comparison of the items and returns the min.
+        """
         raise NotImplementedError
 
-    @property
-    def zero_value(self) -> datetime:
-        raise NotImplementedError
-        return self.parse_timestamp(self._zero_value)
-
-    def increment(self, timestamp: datetime) -> datetime:
+    def max(self, *items: Iterable[Any]) -> Any:
+        """
+        Performs a comparison of the items and returns the max.
+        """
         raise NotImplementedError
 
     def parse_timestamp(self, timestamp: Any) -> datetime:
-        raise NotImplementedError
+        dt_object = pendulum.parse(timestamp)
+        if not isinstance(dt_object, DateTime):
+            raise ValueError(f"DateTime object was expected but got {type(dt_object)} from pendulum.parse({timestamp})")
+        return dt_object  # type: ignore  # we are manually type checking because pendulum.parse may return different types
 
-    def output_format(self, timestamp: datetime) -> Any:
-        raise NotImplementedError
+    def output_format(self, value: Tuple[datetime, str]) -> Any:
+        timestamp, uri = value
+        return f"{timestamp.strftime('%Y-%m-%dT%H:%M:%S.%f') + 'Z'}_{uri}"
 
     def deserialize(self, state: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
         raise NotImplementedError
         for stream_slice in state.get("slices", []):
-            stream_slice[self.START_KEY] = self.parse_timestamp(stream_slice[self.START_KEY])
-            stream_slice[self.END_KEY] = self.parse_timestamp(stream_slice[self.END_KEY])
+            stream_slice[self.START_KEY] = self.parse_value(stream_slice[self.START_KEY])
+            stream_slice[self.END_KEY] = self.parse_value(stream_slice[self.END_KEY])
         if "start" in state:
             state["start"] = self.parse_timestamp(state["start"])
         if "low_water_mark" in state:
             state["low_water_mark"] = self.parse_timestamp(state["low_water_mark"])
         return state
 
-    def parse_value(self, value: Any) -> Any:
-        """
-        Parse the value of the cursor field into a comparable value.
-        """
-        raise NotImplementedError
-        return self.parse_timestamp(value)
+    def parse_value(self, value: str) -> Tuple[datetime, str]:
+        timestamp, uri = value.split("")
+        return self._parse_timestamp(timestamp), uri
 
     def merge_intervals(self, intervals: List[MutableMapping[str, datetime]]) -> List[MutableMapping[str, datetime]]:
         raise NotImplementedError

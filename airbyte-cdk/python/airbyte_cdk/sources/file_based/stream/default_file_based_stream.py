@@ -68,7 +68,7 @@ class DefaultFileBasedStream(AbstractFileBasedStream, IncrementalMixin):
         files_to_read = self._cursor.get_files_to_sync(all_files, self.logger)
         sorted_files_to_read = sorted(files_to_read, key=lambda f: (f.last_modified, f.uri))
         slices = [{"files": list(group[1])} for group in itertools.groupby(sorted_files_to_read, lambda f: f.last_modified)]
-        return slices * 1000
+        return slices
 
     def read_records_from_slice(self, stream_slice: StreamSlice) -> Iterable[AirbyteMessage]:
         """
