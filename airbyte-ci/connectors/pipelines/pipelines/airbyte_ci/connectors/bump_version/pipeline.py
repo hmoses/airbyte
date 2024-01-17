@@ -2,7 +2,6 @@
 # Copyright (c) 2023 Airbyte, Inc., all rights reserved.
 #
 import datetime
-from copy import deepcopy
 from typing import TYPE_CHECKING
 
 import semver
@@ -85,9 +84,9 @@ class AddChangelogEntry(Step):
         today = datetime.date.today().strftime("%Y-%m-%d")
         lines = og_doc_content.splitlines()
         line_index_for_new_entry = self.find_line_index_for_new_entry(og_doc_content)
-        new_entry = f"| {self.new_version} | {today} | [{self.pull_request_number}](https://github.com/airbytehq/airbyte/pull/{self.pull_request_number}) | {self.changelog_entry} |"
+        new_entry = f"| {self.new_version:8} | {today} | [{self.pull_request_number}](https://github.com/airbytehq/airbyte/pull/{self.pull_request_number}) | {self.changelog_entry} |"
         lines.insert(line_index_for_new_entry, new_entry)
-        return "\n".join(lines)
+        return "\n".join(lines) + "\n"
 
 
 class BumpDockerImageTagInMetadata(Step):
@@ -105,17 +104,13 @@ class BumpDockerImageTagInMetadata(Step):
         self.new_version = new_version
 
     @staticmethod
-    def get_metadata_with_bumped_version(previous_version: str, new_version: str, current_metadata: dict) -> dict:
-        updated_metadata = deepcopy(current_metadata)
-        updated_metadata["data"]["dockerImageTag"] = new_version
-        # Bump strict versions
-        if current_metadata["data"].get("registries", {}).get("cloud", {}).get("dockerImageTag") == previous_version:
-            updated_metadata["data"]["registries"]["cloud"]["dockerImageTag"] = new_version
-        return updated_metadata
+    def get_metadata_with_bumped_version(previous_version: str, new_version: str, metadata_str: str) -> str:
+        return metadata_str.replace("dockerImageTag: " + previous_version, "dockerImageTag: " + new_version)
 
     async def _run(self) -> StepResult:
         metadata_path = self.context.connector.metadata_file_path
         current_metadata = await metadata_change_helpers.get_current_metadata(self.repo_dir, metadata_path)
+        current_metadata_str = await metadata_change_helpers.get_current_metadata_str(self.repo_dir, metadata_path)
         current_version = metadata_change_helpers.get_current_version(current_metadata)
         if current_version is None:
             return StepResult(
@@ -124,9 +119,9 @@ class BumpDockerImageTagInMetadata(Step):
                 stdout="Can't retrieve the connector current version.",
                 output_artifact=self.repo_dir,
             )
-        updated_metadata = self.get_metadata_with_bumped_version(current_version, self.new_version, current_metadata)
-        repo_dir_with_updated_metadata = metadata_change_helpers.get_repo_dir_with_updated_metadata(
-            self.repo_dir, metadata_path, updated_metadata
+        updated_metadata_str = self.get_metadata_with_bumped_version(current_version, self.new_version, current_metadata_str)
+        repo_dir_with_updated_metadata = metadata_change_helpers.get_repo_dir_with_updated_metadata_str(
+            self.repo_dir, metadata_path, updated_metadata_str
         )
 
         return StepResult(
